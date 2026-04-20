@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Azure AI Voice Memo</title>
+
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f4f7f9;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            cursor: pointer;
+            border-radius: 4px;
+            border: none;
+            background: #0078d4;
+            color: white;
+            margin-right: 10px;
+        }
+
+        button:disabled {
+            background: #ccc;
+        }
+
+        .tag {
+            background: #e1f0ff;
+            color: #0078d4;
+            padding: 4px 8px;
+            border-radius: 4px;
+            margin: 2px;
+            display: inline-block;
+        }
+
+        #results {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🎤 AI Voice Memo Pipeline</h1>
+
+    <!-- RECORDING -->
+    <div class="card">
+        <h3>Record Memo</h3>
+        <button id="recordBtn">🔴 Start Recording</button>
+        <button id="stopBtn" disabled>⬛ Stop & Process</button>
+        <p id="status">Status: Ready</p>
+    </div>
+
+    <!-- UPLOAD -->
+    <div class="card">
+        <h3>Upload Audio File</h3>
+        <input type="file" id="fileInput" accept=".wav,.mp3,.webm,.ogg,.mp4,.mpg" />
+        <button id="uploadBtn">Upload & Process</button>
+    </div>
+
+    <!-- RESULTS -->
+    <div id="results" class="card">
+        <h3>Results</h3>
+
+        <p><strong>Transcript:</strong></p>
+        <p id="transcriptText" style="font-style: italic;"></p>
+
+        <p><strong>Confidence:</strong> <span id="confidenceScore"></span></p>
+
+        <p><strong>Sentiment:</strong> <span id="sentimentResult"></span></p>
+
+        <p><strong>Key Phrases:</strong></p>
+        <div id="phraseList"></div>
+
+        <p><strong>Entities:</strong></p>
+        <div id="entityList"></div>
+
+        <p><strong>Summary:</strong></p>
+        <p id="summaryText"></p>
+
+        <audio id="ttsPlayer" controls style="width: 100%; margin-top: 15px;"></audio>
+    </div>
+
+<script>
+let mediaRecorder;
+let audioChunks = [];
+const status = document.getElementById('status');
+
+
+// 🔥 DISPLAY RESULTS
+function displayResults(data) {
+    document.getElementById('results').style.display = 'block';
+
+    document.getElementById('transcriptText').innerText = data.transcript;
+
+    document.getElementById('confidenceScore').innerText =
+        (data.confidence * 100).toFixed(1) + "%";
+
+    document.getElementById('sentimentResult').innerText =
+        data.analysis.sentiment;
+
+    document.getElementById('summaryText').innerText =
+        data.summary;
+
+
+// Key phrases
+    document.getElementById('phraseList').innerHTML =
+        data.analysis.keyPhrases.map(p =>
+            `<span class="tag">${p}</span>`
+        ).join('');
+
+
+// Entities
+    document.getElementById('entityList').innerHTML =
+        data.analysis.entities.map(e =>
+            `<span class="tag">${e.text} (${e.category})</span>`
+        ).join('');
+
+
+// TTS audio
+    if (data.audio_base64) {
+        const player = document.getElementById('ttsPlayer');
+        player.src = "data:audio/mp3;base64," + data.audio_base64;
+        player.play();
+    }
+}
+
+
+// 🎤 RECORDING
+document.getElementById('recordBtn').onclick = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/ogg';
+
+    mediaRecorder = new MediaRecorder(stream, { mimeType });
+    audioChunks = [];
+
+    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+    mediaRecorder.start();
+
+    document.getElementById('recordBtn').disabled = true;
+    document.getElementById('stopBtn').disabled = false;
+
+    status.innerText = "Status: Recording...";
+};
+
+
+// STOP RECORDING
+document.getElementById('stopBtn').onclick = () => {
+    mediaRecorder.stop();
+    status.innerText = "Status: Processing...";
+
+    mediaRecorder.onstop = async () => {
+        const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+
+        const formData = new FormData();
+        const ext = mediaRecorder.mimeType.includes('webm') ? 'webm' : 'ogg';
+
+        formData.append('audio', blob, `record.${ext}`);
+
+        try {
+            const response = await fetch('/process', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                displayResults(data);
+                status.innerText = "Status: Complete";
+            } else {
+                status.innerText = "Error: " + data.error;
+            }
+
+        } catch (err) {
+            status.innerText = "Network error";
+            console.error(err);
+        }
+
+        document.getElementById('recordBtn').disabled = false;
+        document.getElementById('stopBtn').disabled = true;
+    };
+};
+
+
+// 📁 FILE UPLOAD
+document.getElementById('uploadBtn').onclick = async () => {
+    const fileInput = document.getElementById('fileInput');
+
+    if (!fileInput.files.length) {
+        alert("Select a file first");
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('audio', fileInput.files[0]);
+
+    status.innerText = "Status: Uploading & Processing...";
+
+    try {
+        const response = await fetch('/process', {
+            method: 'POST',
+            body: formData
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            displayResults(data);
+            status.innerText = "Status: Complete";
+        } else {
+            status.innerText = "Error: " + data.error;
+        }
+
+    } catch (err) {
+        status.innerText = "Network error";
+        console.error(err);
+    }
+};
+</script>
+
+</body>
+</html>
