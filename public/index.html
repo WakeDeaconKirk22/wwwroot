@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Azure AI Voice Memo</title>
+
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f4f7f9;
+            line-height: 1.6;
+        }
+
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+            margin-bottom: 25px;
+        }
+
+        h1 { color: #2c3e50; text-align: center; }
+        h3 { color: #0078d4; margin-top: 0; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+
+        button {
+            padding: 12px 24px;
+            cursor: pointer;
+            border-radius: 6px;
+            border: none;
+            background: #0078d4;
+            color: white;
+            font-weight: 600;
+            transition: background 0.2s;
+            margin-right: 10px;
+        }
+
+        button:hover:not(:disabled) { background: #005a9e; }
+        button:disabled { background: #cbd5e0; cursor: not-allowed; }
+
+        .tag {
+            background: #e1f0ff;
+            color: #0078d4;
+            padding: 5px 12px;
+            border-radius: 20px;
+            margin: 4px;
+            display: inline-block;
+            font-size: 0.9em;
+            border: 1px solid #c2e0ff;
+        }
+
+        #status {
+            font-weight: bold;
+            color: #666;
+            margin-top: 15px;
+        }
+
+        #results {
+            display: none;
+            animation: fadeIn 0.5s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        input[type="file"] {
+            margin-bottom: 15px;
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🎤 AI Voice Memo Pipeline</h1>
+
+    <div class="card">
+        <h3>Record Memo</h3>
+        <button id="recordBtn">🔴 Start Recording</button>
+        <button id="stopBtn" disabled>⬛ Stop & Process</button>
+        <p id="status">Status: Ready</p>
+    </div>
+
+    <div class="card">
+        <h3>Upload Audio File</h3>
+        <input type="file" id="fileInput" accept=".wav,.mp3,.webm,.ogg,.m4a" />
+        <button id="uploadBtn">Upload & Process</button>
+    </div>
+
+    <div id="results" class="card">
+        <h3>Results</h3>
+
+        <p><strong>Transcript:</strong></p>
+        <p id="transcriptText" style="font-style: italic; color: #444; padding-left: 10px; border-left: 3px solid #0078d4;"></p>
+
+        <p><strong>Confidence:</strong> <span id="confidenceScore"></span></p>
+
+        <p><strong>Sentiment:</strong> <span id="sentimentResult" style="text-transform: capitalize; font-weight: bold;"></span></p>
+
+        <p><strong>Key Phrases:</strong></p>
+        <div id="phraseList"></div>
+
+        <p><strong>Entities & Linked Data:</strong></p>
+        <div id="entityList"></div>
+
+        <p><strong>AI Summary:</strong></p>
+        <p id="summaryText" style="background: #f9f9f9; padding: 10px; border-radius: 4px;"></p>
+
+        <audio id="ttsPlayer" controls style="width: 100%; margin-top: 20px;"></audio>
+    </div>
+
+<script>
+let mediaRecorder;
+let audioChunks = [];
+const statusDisplay = document.getElementById('status');
+
+// 🔥 DISPLAY RESULTS FUNCTION
+function displayResults(data) {
+    document.getElementById('results').style.display = 'block';
+
+    // 1. Transcript & Confidence
+    document.getElementById('transcriptText').innerText = data.transcript;
+    document.getElementById('confidenceScore').innerText = (data.confidence * 100).toFixed(1) + "%";
+
+    // 2. Sentiment (Handling the object properly)
+    const sentiment = data.analysis.sentiment.sentiment || data.analysis.sentiment;
+    document.getElementById('sentimentResult').innerText = sentiment;
+    document.getElementById('sentimentResult').style.color = 
+        sentiment === 'positive' ? '#28a745' : (sentiment === 'negative' ? '#dc3545' : '#666');
+
+    // 3. Summary Text
+    document.getElementById('summaryText').innerText = data.summary;
+
+    // 4. Key Phrases
+    document.getElementById('phraseList').innerHTML = data.analysis.keyPhrases.length 
+        ? data.analysis.keyPhrases.map(p => `<span class="tag">${p}</span>`).join('')
+        : "<em>None detected</em>";
+
+    // 5. Entities (Part C)
+    const entities = data.analysis.entities.map(e => `<span class="tag">${e.text} (${e.category})</span>`);
+    const linked = data.analysis.linkedEntities ? data.analysis.linkedEntities.map(l => `<span class="tag" style="background:#fff3cd; color:#856404; border-color:#ffeeba;">🔗 ${l.name}</span>`) : [];
+    
+    document.getElementById('entityList').innerHTML = [...entities, ...linked].join('') || "<em>None detected</em>";
+
+    // 6. TTS Audio Playback (Part D - Jenny Voice)
+    if (data.audio_base64) {
+        const player = document.getElementById('ttsPlayer');
+        // Azure Neural voices are high-quality, usually delivered as WAV headers in the buffer
+        player.src = "data:audio/wav;base64," + data.audio_base64;
+        player.play().catch(e => console.log("Autoplay prevented; user must click play."));
+    }
+}
+
+// 🎤 RECORDING LOGIC
+document.getElementById('recordBtn').onclick = async () => {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+
+        mediaRecorder = new MediaRecorder(stream, { mimeType });
+        audioChunks = [];
+
+        mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+        mediaRecorder.start();
+
+        document.getElementById('recordBtn').disabled = true;
+        document.getElementById('stopBtn').disabled = false;
+        statusDisplay.innerText = "Status: Recording...";
+    } catch (err) {
+        alert("Microphone access denied or not found.");
+    }
+};
+
+document.getElementById('stopBtn').onclick = () => {
+    mediaRecorder.stop();
+    statusDisplay.innerText = "Status: Processing...";
+
+    mediaRecorder.onstop = async () => {
+        const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+        const formData = new FormData();
+        const ext = mediaRecorder.mimeType.includes('webm') ? 'webm' : 'ogg';
+        formData.append('audio', blob, `record.${ext}`);
+
+        await sendToPipeline(formData);
+
+        document.getElementById('recordBtn').disabled = false;
+        document.getElementById('stopBtn').disabled = true;
+    };
+};
+
+// 📁 FILE UPLOAD LOGIC
+document.getElementById('uploadBtn').onclick = async () => {
+    const fileInput = document.getElementById('fileInput');
+    if (!fileInput.files.length) return alert("Select a file first");
+
+    const formData = new FormData();
+    formData.append('audio', fileInput.files[0]);
+    statusDisplay.innerText = "Status: Uploading...";
+
+    await sendToPipeline(formData);
+};
+
+// COMMON FETCH FUNCTION
+async function sendToPipeline(formData) {
+    try {
+        const response = await fetch('/process', { method: 'POST', body: formData });
+        const data = await response.json();
+
+        if (response.ok) {
+            displayResults(data);
+            statusDisplay.innerText = "Status: Complete";
+        } else {
+            statusDisplay.innerText = "Error: " + (data.error || "Processing failed");
+            if(response.status === 415) alert("Error 415: Unsupported Media Type!");
+        }
+    } catch (err) {
+        statusDisplay.innerText = "Status: Network Error";
+        console.error(err);
+    }
+}
+</script>
+
+</body>
+</html>
